@@ -110,14 +110,23 @@ class StreamsExample2Spec extends Specification {
   val monday = new LocalDate(2015, 4, 13)
   val tuesday = new LocalDate(2015, 4, 14)
   val wednesday = new LocalDate(2015, 4, 15)
+  val thursday = new LocalDate(2015, 4, 16)
   val friday = new LocalDate(2015, 4, 17)
   val nextMonday = new LocalDate(2015, 4, 20)
+
+  def tuesdayTime(h: Int, m: Int) = tuesday.toDateTime(new LocalTime(h, m, 0))
+  def thursdayTime(h: Int, m: Int) = thursday.toDateTime(new LocalTime(h, m, 0))
 
   val workDay = WorkDay(new LocalTime(8, 0, 0), new LocalTime(17, 0, 0), None)
   val workDayWithLunch = WorkDay(
     new LocalTime(8, 0, 0),
     new LocalTime(17, 0, 0),
     (new LocalTime(11, 0, 0), new LocalTime(12, 0, 0)).some
+  )
+
+  val mondayNoonToFriday = new Interval(
+    monday.toDateTime(workDay.start.plus(Period.hours(4))),
+    friday.toDateTime(new LocalTime(23, 0, 0))
   )
 
   "A work-day stream" >> {
@@ -214,11 +223,6 @@ class StreamsExample2Spec extends Specification {
 
     val oneAndAHalfDays = Period.days(1).plusHours(4)
 
-    val mondayNoonToFriday = new Interval(
-      monday.toDateTime(workDay.start.plus(Period.hours(4))),
-      friday.toDateTime(new LocalTime(23, 0, 0))
-    )
-
     val mondayToFriday = overlap(allWorkDays, EphemeralStream[Interval](mondayNoonToFriday))
 
     def oneAndAHalfWorkdays(start: LocalDate): List[Interval] =
@@ -252,4 +256,89 @@ class StreamsExample2Spec extends Specification {
       headAsList(tail(s)) must_== oneAndAHalfWorkdays(wednesday)
     }
   }
+
+  "canUseLunch_?" >> {
+    "must return false if shorter start/end to lunch interval doesn't fit" >> {
+      val oddWorkDay = WorkDay(
+        new LocalTime(8, 0, 0),
+        new LocalTime(17, 0, 0),
+        (new LocalTime(10, 0, 0), new LocalTime(11, 0, 0)).some
+      )
+      oddWorkDay.canUseLunch_?(Period.hours(2)) must_== true
+      oddWorkDay.canUseLunch_?(Period.hours(3)) must_== false
+    }
+
+    "must return false if search period is longer than one work day" >> {
+      workDay.canUseLunch_?(Period.hours(10)) must_== false
+    }
+
+    "must return false if search period is less than and equal to one day and no lunch" >> {
+      workDay.canUseLunch_?(Period.hours(8)) must_== false
+    }
+
+    "must return false if search period is less than and equal to one day and has lunch" >> {
+      workDayWithLunch.canUseLunch_?(Period.hours(8)) must_== false
+    }
+  }
+
+  "mergeAbutting" >> {
+    "must correctly merge abutting intervals" >> {
+      val input = stream(mkI(0, 5), mkI(5, 10), mkI(15, 20), mkI(25, 30), mkI(30, 35), mkI(35, 40), mkI(45, 50))
+      val output = stream(mkI(0, 10), mkI(15, 20), mkI(25, 40), mkI(45, 50))
+
+      mergeAbutting(input).toList must_== output.toList
+    }
+  }
+
+  "freeIntervals" >> {
+    val freeTimes = EphemeralStream(
+      new Interval(
+        tuesday.toDateTime(new LocalTime(10, 0, 0)),
+        tuesday.toDateTime(new LocalTime(17, 0, 0))
+      ),
+      new Interval(
+        thursday.toDateTime(new LocalTime(8, 0, 0)),
+        thursday.toDateTime(new LocalTime(10, 0, 0))
+      ),
+      new Interval(
+        thursday.toDateTime(new LocalTime(11, 0, 0)),
+        monday.toDateTime(new LocalTime(23, 0, 0)).plusDays(7)
+      )
+    )
+
+    val f = freeIntervals(
+      freeTimes,
+      Set(wednesday),
+      tuesday,
+      workDayWithLunch,
+      _: Period
+    )
+
+    "should not schedule during lunch for small intervals" >> {
+      val first = List(new Interval(tuesdayTime(10, 0), tuesdayTime(10, 45)))
+      val second = List(new Interval(tuesdayTime(12, 0), tuesdayTime(12, 45)))
+      f(Period.minutes(45)).take(2).map(_.toList).toList must_== List(first, second)
+    }
+
+    "should schedule during lunch for larger intervals" >> {
+      val first = List(new Interval(tuesdayTime(10, 0), tuesdayTime(15, 0)))
+      // Holidays would normally already be filtered out
+      val second = List(new Interval(thursdayTime(11, 0), thursdayTime(16, 0)))
+      f(Period.hours(5)).take(2).map(_.toList).toList must_== List(first, second)
+    }
+
+    "should use a multiple day search when requested" >> {
+      f(Period.days(1).plusHours(2)).toList.map(_.toList) must_==
+        List(List(
+          new Interval(
+            friday.toDateTime(new LocalTime(8, 0, 0)),
+            friday.toDateTime(new LocalTime(17, 0, 0))),
+          new Interval(
+            monday.toDateTime(new LocalTime(8, 0, 0)).plusDays(7),
+            monday.toDateTime(new LocalTime(10, 0, 0)).plusDays(7))
+        ))
+    }
+  }
+
+
 }
